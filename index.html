@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>글자낙하</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Do+Hyeon&family=Gowun+Batang:wght@700&family=Space+Mono:wght@400;700&display=swap">
+<style>
+/* Layout: a cobalt poster sheet; letters are physical objects that pile up; typing field and gravity controls sit on a strip at the top */
+:root{
+  --sheet:#1d3fd8; --sheet-deep:#1633b8; --paper:#f6f3ea; --sun:#ffd21f; --pink:#ff8fb8; --black:#0c0c14;
+  --display:"Black Han Sans","Do Hyeon",sans-serif; --mono:"Space Mono",ui-monospace,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%;}
+body{background:var(--sheet);color:var(--paper);font-family:var(--mono);overflow:hidden;}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab;}
+.top{position:fixed;left:0;right:0;top:0;padding:calc(env(safe-area-inset-top,0px) + 14px) max(16px,3vw) 0;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;pointer-events:none;}
+.top > *{pointer-events:auto;}
+.brand{font-family:var(--display);font-size:22px;letter-spacing:.02em;display:flex;align-items:baseline;gap:10px;pointer-events:none;}
+.brand small{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;opacity:.7;}
+form{display:flex;gap:0;flex:1 1 320px;max-width:520px;min-width:0;}
+input[type=text]{flex:1;min-width:0;font:700 15px var(--mono);color:var(--black);background:var(--paper);border:0;border-radius:0;padding:11px 14px;}
+input::placeholder{color:#8a8778;}
+button{font:700 12px var(--mono);letter-spacing:.08em;text-transform:uppercase;border:0;cursor:pointer;padding:11px 14px;color:var(--black);background:var(--sun);}
+button:hover{filter:brightness(1.06);}
+button:focus-visible,input:focus-visible{outline:3px solid var(--pink);outline-offset:2px;}
+.ctrl{display:flex;gap:6px;flex-wrap:wrap;}
+.ctrl button{background:transparent;color:var(--paper);border:1.5px solid rgba(246,243,234,.5);padding:8px 10px;}
+.ctrl button:hover{border-color:var(--paper);}
+.ctrl button[aria-pressed="true"]{background:var(--paper);color:var(--sheet);border-color:var(--paper);}
+.foot{position:fixed;left:max(16px,3vw);bottom:calc(env(safe-area-inset-bottom,0px) + 12px);font-size:11px;letter-spacing:.1em;text-transform:uppercase;opacity:.65;pointer-events:none;}
+.count{position:fixed;right:max(16px,3vw);bottom:calc(env(safe-area-inset-bottom,0px) + 12px);font-size:11px;letter-spacing:.1em;opacity:.65;pointer-events:none;font-variant-numeric:tabular-nums;}
+</style>
+<style>html{-webkit-text-size-adjust:100%}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+</head>
+<body>
+
+
+<canvas id="c" aria-label="글자가 물리적으로 떨어지고 쌓이는 캔버스. 글자를 잡아서 던질 수 있어요."></canvas>
+<div class="top">
+  <div class="brand">글자낙하 <small>Type · Drop · Throw</small></div>
+  <form id="f" autocomplete="off">
+    <input type="text" id="t" aria-label="떨어뜨릴 글자" maxlength="40" placeholder="단어를 쓰고 Enter" value="">
+    <button type="submit">떨어뜨리기</button>
+  </form>
+  <div class="ctrl" role="group" aria-label="중력">
+    <button data-g="down" aria-pressed="true" title="아래로">↓</button>
+    <button data-g="up" aria-pressed="false" title="위로">↑</button>
+    <button data-g="left" aria-pressed="false" title="왼쪽으로">←</button>
+    <button data-g="right" aria-pressed="false" title="오른쪽으로">→</button>
+    <button data-g="zero" aria-pressed="false">무중력</button>
+    <button id="shake">흔들기</button>
+    <button id="clear">비우기</button>
+  </div>
+</div>
+<div class="foot">글자를 잡아 던져보세요</div>
+<div class="count" id="count">0 LETTERS</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+(async()=>{
+const {Engine,Bodies,Composite,Body,Mouse,MouseConstraint,Events}=Matter;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const css=getComputedStyle(document.documentElement);
+const tok=n=>css.getPropertyValue(n).trim();
+const COLORS=[tok('--paper'),tok('--sun'),tok('--pink'),tok('--black'),tok('--paper')];
+const FACES=['"Black Han Sans"','"Do Hyeon"','"Gowun Batang"'];
+const WEIGHT={'"Gowun Batang"':'700'};
+let W,H,dpr,size;
+const engine=Engine.create({enableSleeping:false});
+engine.gravity.y=1;
+let walls=[];
+const letters=[];
+
+try{await Promise.all(FACES.map(f=>document.fonts.load(`${WEIGHT[f]||'400'} 80px ${f}`,'가A')));}catch(e){}
+
+function resize(){
+  dpr=Math.max(1,Math.min(2,Math.round(devicePixelRatio||1)));
+  W=innerWidth;H=innerHeight;cv.width=W*dpr;cv.height=H*dpr;cv.setAttribute('data-pixel-ratio',dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  size=Math.max(46,Math.min(128,Math.min(W,H)/7));
+  Composite.remove(engine.world,walls);
+  const t=200,o={isStatic:true};
+  walls=[Bodies.rectangle(W/2,H+t/2,W*3,t,o),Bodies.rectangle(W/2,-t/2-400,W*3,t,o),Bodies.rectangle(-t/2,H/2,t,H*3,o),Bodies.rectangle(W+t/2,H/2,t,H*3,o)];
+  Composite.add(engine.world,walls);
+  letters.forEach(l=>{if(l.position.x>W)Body.setPosition(l,{x:W-60,y:l.position.y});if(l.position.y>H)Body.setPosition(l,{x:l.position.x,y:H-80});});
+}
+addEventListener('resize',resize);resize();
+
+function makeLetter(ch,x,y){
+  const face=FACES[(Math.random()*FACES.length)|0];
+  const s=size*(.8+Math.random()*.45);
+  const font=`${WEIGHT[face]||'400'} ${s}px ${face}`;
+  ctx.font=font;const m=ctx.measureText(ch);
+  const w=Math.max(s*.35,m.width*.92),h=s*.86;
+  const b=Bodies.rectangle(x,y,w,h,{restitution:.35,friction:.6,frictionAir:.008,density:.0014,chamfer:{radius:Math.min(8,w*.12)}});
+  b.glyph={ch,font,w,h,color:COLORS[(Math.random()*COLORS.length)|0]};
+  Body.setAngle(b,(Math.random()-.5)*.6);
+  Body.setAngularVelocity(b,(Math.random()-.5)*.08);
+  return b;
+}
+function drop(text){
+  const chars=[...text].filter(c=>c.trim());
+  if(!chars.length)return;
+  const total=chars.length*size*.8;let x=Math.max(size,W/2-total/2);
+  chars.forEach((ch,i)=>{
+    setTimeout(()=>{
+      const g=engine.gravity;let px=Math.min(W-size,x+i*size*.8),py=-size;
+      if(g.y<0)py=H-size*.6; if(g.x>0&&g.y===0){px=-0;py=H*.3+Math.random()*H*.4;} if(g.x<0&&g.y===0){px=W;py=H*.3+Math.random()*H*.4;}
+      if(g.x===0&&g.y===0){px=W*.2+Math.random()*W*.6;py=H*.3+Math.random()*H*.4;}
+      const b=makeLetter(ch,Math.max(size/2,Math.min(W-size/2,px)),py);
+      if(g.y<0)Body.setVelocity(b,{x:0,y:-8});
+      letters.push(b);Composite.add(engine.world,b);
+      while(letters.length>220){Composite.remove(engine.world,letters.shift());}
+      document.getElementById('count').textContent=letters.length+' LETTERS';
+    },i*70);
+  });
+}
+
+/* mouse / touch throwing */
+const mouse=Mouse.create(cv);
+mouse.element.removeEventListener('mousewheel',mouse.mousewheel);
+mouse.element.removeEventListener('DOMMouseScroll',mouse.mousewheel);
+mouse.element.removeEventListener('wheel',mouse.mousewheel);
+const mc=MouseConstraint.create(engine,{mouse,constraint:{stiffness:.18,damping:.08,render:{visible:false}}});
+Composite.add(engine.world,mc);
+
+/* controls */
+document.getElementById('f').addEventListener('submit',e=>{e.preventDefault();const t=document.getElementById('t');drop(t.value||'띵');t.value='';});
+const G={down:[0,1],up:[0,-1],left:[-1,0],right:[1,0],zero:[0,0]};
+document.querySelectorAll('[data-g]').forEach(b=>b.onclick=()=>{
+  const [x,y]=G[b.dataset.g];engine.gravity.x=x;engine.gravity.y=y;
+  document.querySelectorAll('[data-g]').forEach(o=>o.setAttribute('aria-pressed',o===b));
+  if(b.dataset.g==='zero')letters.forEach(l=>Body.setVelocity(l,{x:(Math.random()-.5)*4,y:(Math.random()-.5)*4-2}));
+});
+document.getElementById('shake').onclick=()=>letters.forEach(l=>Body.setVelocity(l,{x:(Math.random()-.5)*26,y:-8-Math.random()*16}));
+document.getElementById('clear').onclick=()=>{letters.forEach(l=>Composite.remove(engine.world,l));letters.length=0;document.getElementById('count').textContent='0 LETTERS';};
+addEventListener('keydown',e=>{if(document.activeElement.id==='t')return;if(e.key.length===1&&e.key.trim()){drop(e.key);}});
+
+/* render */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(1000/30,now-last);last=now;
+  Engine.update(engine,dt);
+  ctx.fillStyle=tok('--sheet');ctx.fillRect(0,0,W,H);
+  // poster grid
+  ctx.strokeStyle='rgba(246,243,234,.07)';ctx.lineWidth=1;
+  const step=Math.max(40,size*.75);
+  for(let x=step;x<W;x+=step){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=step;y<H;y+=step){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  letters.forEach(b=>{
+    const g=b.glyph;
+    ctx.save();ctx.translate(b.position.x,b.position.y);ctx.rotate(b.angle);
+    ctx.font=g.font;
+    ctx.fillStyle='rgba(8,14,60,.28)';ctx.fillText(g.ch,4,6);
+    ctx.fillStyle=g.color;ctx.fillText(g.ch,0,g.h*.04);
+    ctx.restore();
+  });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+drop('떨어지는글자놀이');
+setTimeout(()=>drop('TYPE & THROW'),900);
+})();
+</script>
+
+</body>
+</html>
